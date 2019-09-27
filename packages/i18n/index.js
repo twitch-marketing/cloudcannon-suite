@@ -10,6 +10,7 @@ var async = require("async"),
 	props2json = require("gulp-props2json"),
 	i18n = require("./plugins/i18n"),
 	rename = require("gulp-rename"),
+	through = require("through2").obj,
 	PythonShell = require("python-shell");
 
 var configDefaults = {
@@ -220,9 +221,57 @@ module.exports = function (gulp, config) {
 			.pipe(gulp.dest(config.i18n.dest));
 	});
 
+
+	class Partition {
+		constructor(config) {
+			let options = { count: 1, partition: 1, ...config };
+
+			// log('I18N_PARTITION_COUNT', process.env.I18N_PARTITION_COUNT);
+			// log('I18N_PARTITION_NUMBER', process.env.I18N_PARTITION_NUMBER);
+
+			this.count = process.env.I18N_PARTITION_COUNT || options.count || 1;
+			this.currentPartition = process.env.I18N_PARTITION_NUMBER || options.partition || 1;
+			this.items = [];
+			this.partitionItems = [];
+		}
+		
+		get build() {
+			return through((file, enc, done) => {
+				this.items.push(file.path);
+				done(null, file);
+			}, (cb) => {
+				let { items, currentPartition, count } = this;
+				let totalCount = items.length;
+				let size = Math.ceil(totalCount / count);
+				let start = currentPartition * size;
+	
+				log('partitionItems', { totalCount, size, start, currentPartition, count });
+	
+				this.partitionItems = items.slice(start, size);
+				cb();
+			});
+		}
+
+		get filter() {
+			return through((file, enc, done) => {
+				if (this.partitionItems.includes(file.path)) {
+					log('match', file);
+					done(null, file);
+				}
+				else {
+					done();
+				}
+			});
+		}
+	}
+
 	gulp.task("i18n:translate-html-pages", function (done) {
 		async.each(localeNames, function (targetLocale, next) {
+			const partition = new Partition(config.i18n.partition)
+
 			return gulp.src(config.i18n.src + "/**/*.html")
+				.pipe(partition.build)
+				.pipe(partition.filter)
 				.pipe(i18n.translate({
 					showMissingLocaleWarnings: config.i18n.show_missing_locale_warnings,
 					addOtherLocaleAlternates: true,
